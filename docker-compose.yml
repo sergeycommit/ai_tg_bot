@@ -14,7 +14,7 @@ services:
       - DB_PASSWORD=postgres
       - DB_NAME=${DB_NAME}
       - DB_HOST=db
-      - DB_PORT=5532
+      - DB_PORT=${DB_PORT}
     volumes:
       - ./:/app
 
@@ -29,7 +29,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init-db:/docker-entrypoint-initdb.d
     ports:
-      - "5532:5532"
+      - "${DB_PORT}:${DB_PORT}"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d ${DB_NAME}"]
       interval: 5s
