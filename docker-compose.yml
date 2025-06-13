@@ -3,38 +3,29 @@ version: '3.8'
 services:
   bot:
     build: .
-    restart: always
     depends_on:
-      db:
-        condition: service_healthy
-    env_file:
-      - .env
+      - db
     environment:
-      - DB_USER=${DB_USER}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - DB_NAME=${DB_NAME}
-      - DB_HOST=${DB_HOST}
-      - DB_PORT=${DB_PORT}
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=ai_tg_bot_db
     volumes:
-      - ./:/app
+      - .:/app
+    restart: always
 
   db:
     image: postgres:15-alpine
-    restart: always
     environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=ai_tg_bot_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init-db:/docker-entrypoint-initdb.d
     ports:
-      - "${DB_PORT}:${DB_PORT}"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      - "5432:5432"
+    restart: always
 
 volumes:
   postgres_data:
