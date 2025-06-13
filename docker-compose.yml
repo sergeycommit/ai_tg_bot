@@ -13,6 +13,7 @@ services:
       - DB_NAME=ai_tg_bot_db
     volumes:
       - .:/app
+      - ./voice:/app/voice
     restart: always
 
   db:

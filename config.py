@@ -29,3 +29,15 @@ DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT
 # Application settings
 FREE_REQUESTS_PER_DAY = int(os.getenv("FREE_REQUESTS_PER_DAY", "5"))  # Default to 5 free requests per day
 TRIAL_PERIOD_DAYS = int(os.getenv("TRIAL_PERIOD_DAYS", "5"))  # Duration of trial period in days
+
+# New settings
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # Default to 0 if not set
+
+# Channel settings
+CHANNEL_ID = os.getenv("CHANNEL_ID", "@your_channel")
+
+# Payment settings
+PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN", "")
+
+# OpenAI settings
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")

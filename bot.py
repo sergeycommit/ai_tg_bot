@@ -9,12 +9,17 @@ from aiogram.types import Message, InlineKeyboardButton, LabeledPrice
 from aiogram.enums import ChatMemberStatus
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base, relationship
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, select
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import text, Column, Integer, String, Boolean, DateTime, ForeignKey, Text, select
 from openai import AsyncOpenAI
 import asyncpg
-from config import *
+from config import (
+    BOT_TOKEN, OR_API_KEY, CHANNEL, CHANNEL_URL, DATABASE_URL, 
+    FREE_REQUESTS_PER_DAY, ADMIN_USER_ID, HF_API_KEY, MODEL
+)
 from typing import Optional
+from migrations import migrate_database
+from models import *
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -60,65 +65,54 @@ PREMIUM_PLANS = {
     }
 }
 
-async def create_database_if_not_exists():
-    """Create database if it doesn't exist"""
-    try:
-        # Connect to default postgres database
-        sys_conn = await asyncpg.connect(
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT,
-            database='postgres'
-        )
-        
-        # Check if database exists
-        exists = await sys_conn.fetchval(
-            "SELECT 1 FROM pg_database WHERE datname = $1",
-            DB_NAME
-        )
-        
-        if not exists:
-            # Create new database
-            await sys_conn.execute(f'CREATE DATABASE "{DB_NAME}"')
-            logger.info(f"Database '{DB_NAME}' created successfully!")
-        else:
-            logger.info(f"Database '{DB_NAME}' already exists.")
-        
-        await sys_conn.close()
-    except Exception as e:
-        logger.error(f"Error creating database: {str(e)}")
-        raise
-
 # Database setup
-Base = declarative_base()
 engine = create_async_engine(DATABASE_URL)
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-class User(Base):
-    __tablename__ = "users"
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, unique=True)
-    username = Column(String)
-    is_premium = Column(Boolean, default=False)
-    requests_today = Column(Integer, default=0)
-    last_request_date = Column(DateTime, default=datetime.utcnow)
-    
-    # Relationship with messages
-    messages = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
-
-class ChatMessage(Base):
-    __tablename__ = "chat_messages"
-    
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    role = Column(String)  # 'user' or 'assistant'
-    content = Column(Text)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    
-    # Relationship with user
-    user = relationship("User", back_populates="messages")
+async def create_database_if_not_exists():
+    """Initialize database with migrations"""
+    try:
+        async with async_session() as session:
+            # Create tables
+            await session.execute(text("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER UNIQUE NOT NULL,
+                    username VARCHAR,
+                    first_name VARCHAR,
+                    last_name VARCHAR,
+                    is_premium BOOLEAN DEFAULT FALSE,
+                    premium_until TIMESTAMP,
+                    requests_today INTEGER DEFAULT 0,
+                    last_request_date DATE
+                )
+            """))
+            
+            await session.execute(text("""
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id),
+                    role VARCHAR,
+                    content TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            
+            await session.commit()
+            logger.info("Database tables created successfully")
+            
+            # Apply migrations
+            success = await migrate_database(session)
+            if success:
+                logger.info("Database migrations applied successfully")
+            else:
+                logger.error("Failed to apply database migrations")
+                return False
+                
+            return True
+    except Exception as e:
+        logger.error(f"Error initializing database: {e}")
+        return False
 
 async def get_chat_history(user_id: int, limit: int = 5) -> list:
     """
@@ -169,6 +163,10 @@ async def get_chatgpt_response(message: str, chat_history: list) -> str:
     Get response from ChatGPT API with chat history
     """
     try:
+        if not MODEL:
+            logger.error("MODEL is not defined in environment variables")
+            return "Sorry, the AI model is not configured. Please contact the administrator."
+
         # Prepare messages with history
         messages = [
             {"role": "system", "content": "You are a helpful AI assistant."},
@@ -231,33 +229,18 @@ async def process_subscription_check(callback_query: types.CallbackQuery):
 
 async def get_user(session: AsyncSession, user_id: int) -> Optional[User]:
     """Get user from database"""
-    try:
-        stmt = select(User).where(User.user_id == user_id)
-        result = await session.execute(stmt)
-        return result.scalar_one_or_none()
-    except Exception as e:
-        logger.error(f"Error getting user: {e}")
-        return None
+    result = await session.execute(select(User).where(User.user_id == user_id))
+    return result.scalar_one_or_none()
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     """Handle /start command"""
     try:
-        # Check if user is a member of the channel
-        if not await check_subscription(message.from_user.id):
-            await message.answer(
-                "⚠️ To use the bot, you need to subscribe to our channel.",
-                reply_markup=InlineKeyboardBuilder()
-                .button(text="📢 Subscribe to channel", url=CHANNEL_URL)
-                .as_markup()
-            )
-            return
-
         # Get or create user
         async with async_session() as session:
             user = await get_user(session, message.from_user.id)
             if not user:
-                user = User(
+                new_user = User(
                     user_id=message.from_user.id,
                     username=message.from_user.username,
                     first_name=message.from_user.first_name,
@@ -266,8 +249,9 @@ async def cmd_start(message: Message):
                     requests_today=0,
                     last_request_date=datetime.now().date()
                 )
-                session.add(user)
+                session.add(new_user)
                 await session.commit()
+                logger.info(f"Created new user: {new_user.user_id}")
 
         # Send welcome message
         await message.answer(
@@ -448,75 +432,41 @@ async def check_user_limits(user_id: int) -> bool:
         await session.commit()
         return True
 
-async def whisper_stt(audio_file) -> str:
+async def whisper_stt(audio_file_path: str) -> str:
     logger.info("Request to whisper_stt")
     try:
         API_URL = "https://api-inference.huggingface.co/models/openai/whisper-large-v3-turbo"
         headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-        response = requests.post(API_URL, headers=headers, data=audio_file)
-        return response.json()["text"]
+        
+        # Read the audio file in binary mode
+        with open(audio_file_path, 'rb') as f:
+            audio_data = f.read()
+            
+        response = requests.post(API_URL, headers=headers, data=audio_data)
+        
+        # Log the response status and content for debugging
+        logger.info(f"Whisper API Response Status: {response.status_code}")
+        logger.info(f"Whisper API Response Content: {response.text[:200]}...")  # Log first 200 chars
+        
+        if response.status_code != 200:
+            logger.error(f"Whisper API Error: {response.text}")
+            return ""
+            
+        try:
+            result = response.json()
+            if "text" in result:
+                return result["text"]
+            else:
+                logger.error(f"Unexpected API response format: {result}")
+                return ""
+        except ValueError as e:
+            logger.error(f"Failed to parse API response as JSON: {e}")
+            logger.error(f"Raw response: {response.text}")
+            return ""
+            
     except Exception as e:
         logger.error(f"Error querying whisper_stt: {str(e)}")
         return ""
-
-@router.message()
-async def handle_message(message: Message):
-    user_id = message.from_user.id
-    
-    # Check subscription first
-    if not await check_subscription(user_id):
-        await message.answer(
-            "⚠️ To use the bot, you need to subscribe to our channel.",
-            reply_markup=InlineKeyboardBuilder()
-            .button(text="📢 Subscribe to channel", url=CHANNEL_URL)
-            .as_markup()
-        )
-        return
-
-    # Check user limits
-    if not await check_user_limits(user_id):
-        # Create keyboard with Get Premium button
-        builder = InlineKeyboardBuilder()
-        builder.button(text="💎 Get Premium", callback_data="show_premium_plans")
-        builder.adjust(1)
-        
-        await message.answer(
-            "⚠️ You've reached your daily limit of free requests.\n\n"
-            "Get Premium to enjoy unlimited access!",
-            reply_markup=builder.as_markup()
-        )
-        return
-
-    if message.voice:
-        # Handle voice message
-        voice = await message.voice.get_file()
-        audio_file = await bot.download_file(voice.file_path)
-        text = await whisper_stt(audio_file)
-        if not text:
-            await message.answer("Sorry, I couldn't recognize the voice message.")
-            return
-        message.text = text
-    
-    # Process text with ChatGPT
-    try:
-        # Show typing indicator
-        await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-        
-        # Get chat history
-        chat_history = await get_chat_history(user_id)
-        
-        # Get response from ChatGPT
-        response = await get_chatgpt_response(message.text, chat_history)
-        
-        # Save both user message and assistant response
-        await save_message(user_id, "user", message.text)
-        await save_message(user_id, "assistant", response)
-        
-        # Send response
-        await message.answer(response)
-    except Exception as e:
-        logger.error(f"Error processing message: {str(e)}")
-        await message.answer("Sorry, an error occurred while processing your message.")
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
@@ -532,7 +482,8 @@ async def cmd_help(message: Message):
         "• /start - Start the bot\n"
         "• /help - Show this help message\n"
         "• /premium - Get premium subscription\n"
-        "• /clear - Clear chat history\n\n"
+        "• /clear - Clear chat history\n"
+        "• /migrate - Apply database migrations (admin only)\n\n"
         "<b>Free Usage:</b>\n"
         "• 5 free requests per day\n"
         "• Basic AI features\n\n"
@@ -547,14 +498,140 @@ async def cmd_help(message: Message):
     
     await message.answer(help_text, parse_mode="HTML")
 
+@router.message(Command("migrate"))
+async def cmd_migrate(message: Message):
+    """Handle /migrate command"""
+    # Check if user is admin
+    if message.from_user.id != ADMIN_USER_ID:
+        await message.answer("❌ This command is only available for administrators.")
+        return
+        
+    try:
+        # Send initial message
+        status_message = await message.answer("🔄 Applying database migrations...")
+        
+        async with async_session() as session:
+            success = await migrate_database(session)
+            if success:
+                await status_message.edit_text("✅ Database migrations applied successfully!")
+                # Send additional notification to admin
+                await bot.send_message(
+                    ADMIN_USER_ID,
+                    "✅ Database migrations completed successfully!\n"
+                    "All tables and columns are up to date."
+                )
+            else:
+                await status_message.edit_text("❌ Error applying database migrations. Check logs for details.")
+                # Send error notification to admin
+                await bot.send_message(
+                    ADMIN_USER_ID,
+                    "❌ Database migration failed!\nCheck logs for details."
+                )
+    except Exception as e:
+        logger.error(f"Error in migrate command: {e}")
+        await message.answer("❌ An error occurred while applying migrations.")
+        # Send error notification to admin
+        try:
+            await bot.send_message(
+                ADMIN_USER_ID,
+                f"❌ Database migration failed!\nError: {str(e)}"
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to send admin notification: {notify_error}")
+
+@router.message()
+async def handle_message(message: Message):
+    """Handle incoming messages"""
+    try:
+        # Check subscription
+        if not await check_subscription(message.from_user.id):
+            await send_subscription_message(message)
+            return
+
+        # Check user limits
+        if not await check_user_limits(message.from_user.id):
+            await message.answer(
+                "⚠️ You've reached your daily message limit.\n"
+                "Upgrade to Premium for unlimited access!\n"
+                "Use /premium to see available plans."
+            )
+            return
+
+        # Handle voice messages
+        if message.voice:
+            try:
+                # Create voice directory if it doesn't exist
+                os.makedirs('voice', exist_ok=True)
+                
+                # Get voice file info
+                voice = message.voice
+                file_id = voice.file_id
+                file = await bot.get_file(file_id)
+                
+                # Download voice file
+                voice_path = f"voice/{message.from_user.id}.ogg"
+                await bot.download_file(file.file_path, voice_path)
+                
+                # Convert voice to text using Whisper
+                text = await whisper_stt(voice_path)
+                
+                # Delete the voice file after processing
+                os.remove(voice_path)
+                
+                if not text:
+                    await message.answer("Sorry, I couldn't understand the voice message. Please try again.")
+                    return
+                
+                # Get chat history
+                chat_history = await get_chat_history(message.from_user.id)
+                
+                # Get response from ChatGPT
+                response = await get_chatgpt_response(text, chat_history)
+                
+                # Save messages to history
+                await save_message(message.from_user.id, "user", text)
+                await save_message(message.from_user.id, "assistant", response)
+                
+                # Send response
+                await message.answer(response)
+                
+            except Exception as e:
+                logger.error(f"Error processing voice message: {e}")
+                await message.answer("Sorry, there was an error processing your voice message. Please try again.")
+                return
+
+        # Process text messages
+        if message.text:
+            # Get chat history
+            chat_history = await get_chat_history(message.from_user.id)
+            
+            # Get response from ChatGPT
+            response = await get_chatgpt_response(message.text, chat_history)
+            
+            # Save messages to history
+            await save_message(message.from_user.id, "user", message.text)
+            await save_message(message.from_user.id, "assistant", response)
+            
+            # Send response
+            await message.answer(response)
+    except Exception as e:
+        logger.error(f"Error processing message: {e}")
+        await message.answer("Sorry, an error occurred while processing your message.")
+
 async def main():
     """Main function"""
     try:
         # Create database tables
         await create_database_if_not_exists()
         
-        # Start polling
-        await router.start_polling(bot)
+        # Start polling with retry on network errors
+        while True:
+            try:
+                await router.start_polling(bot)
+            except Exception as e:
+                logger.error(f"Error in polling: {e}")
+                await asyncio.sleep(5)  # Wait 5 seconds before retrying
+                continue
     except Exception as e:
         logger.error(f"Error in main: {e}")
 
