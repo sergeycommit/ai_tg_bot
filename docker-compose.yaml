@@ -1,0 +1,58 @@
+version: "3.9"
+services:
+  freegpt:
+    build: .
+    container_name: ${TG_BOT_NAME}
+    depends_on:
+      - mongodb
+    restart: always
+    volumes:
+      - ./voices:/voices
+      - ./photos:/photos
+      - ./nltk_data:/nltk_data
+    ports:
+      - "8195:80"
+    networks:
+      gpt_net:
+        ipv4_address: ${DOCKER_SERVICE_IP}
+
+  mongodb:
+    image: mongo:latest
+    container_name: ${TG_BOT_NAME}_mongo
+    ports:
+      - "27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_LOGIN}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PSWD}
+      MONGO_INITDB_DATABASE: ${DB_NAME}
+    restart: unless-stopped
+    volumes:
+      - ./mongodb:/data/db
+      - ./mongodb-backup/:/backup
+    networks:
+      gpt_net:
+        ipv4_address: ${DOCKER_BD_IP}
+
+  mongo_express:
+    image: mongo-express
+    container_name: ${TG_BOT_NAME}_mongo_express
+    restart: unless-stopped
+    ports:
+      - "8086:8081"
+    environment:
+      ME_CONFIG_BASICAUTH: "true"
+      ME_CONFIG_BASICAUTH_USERNAME: ${MONGO_LOGIN}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${MONGO_PSWD}
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_LOGIN}:${MONGO_PSWD}@${DOCKER_BD_IP}:27017/
+    depends_on:
+      - mongodb
+    networks:
+      gpt_net:
+        ipv4_address: ${DOCKER_ME_IP}
+
+networks:
+  gpt_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${DOCKER_SUBNET}/24

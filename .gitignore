@@ -1,0 +1,5 @@
+.env
+.photos/
+.welcome_photos
+.idea/
+__pycache__/
