@@ -407,6 +407,10 @@ async def process_successful_payment(message: Message):
         await message.answer("❌ An error occurred while activating your premium subscription. Please contact support.")
 
 async def check_user_limits(user_id: int) -> bool:
+    # Check if user is admin
+    if user_id == ADMIN_USER_ID:
+        return True
+        
     async with async_session() as session:
         stmt = select(User).where(User.user_id == user_id)
         result = await session.execute(stmt)
@@ -416,9 +420,10 @@ async def check_user_limits(user_id: int) -> bool:
             return False
         
         # Reset daily counter if it's a new day
-        if user.last_request_date.date() < datetime.utcnow().date():
+        current_date = datetime.utcnow().date()
+        if user.last_request_date is None or user.last_request_date.date() < current_date:
             user.requests_today = 0
-            user.last_request_date = datetime.utcnow()
+            user.last_request_date = current_date
             await session.commit()
         
         if user.is_premium:
@@ -428,7 +433,7 @@ async def check_user_limits(user_id: int) -> bool:
             return False
         
         user.requests_today += 1
-        user.last_request_date = datetime.utcnow()
+        user.last_request_date = current_date
         await session.commit()
         return True
 
