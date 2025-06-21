@@ -33,7 +33,7 @@ services:
     image: postgres:latest
     container_name: ${TG_BOT_NAME}_bd
     ports:
-      - "5432"
+      - "5532"
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}

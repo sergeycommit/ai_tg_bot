@@ -15,7 +15,7 @@ from openai import AsyncOpenAI
 import asyncpg
 from config import (
     BOT_TOKEN, OR_API_KEY, CHANNEL, CHANNEL_URL, DATABASE_URL, 
-    FREE_REQUESTS_PER_DAY, ADMIN_USER_ID, HF_API_KEY, MODEL
+    FREE_REQUESTS_PER_DAY, ADMIN_USER_ID, HF_API_KEY, MODEL, DB_PASSWORD
 )
 from typing import Optional
 from migrations import migrate_database
@@ -91,7 +91,11 @@ async def create_database_if_not_exists():
     for attempt in range(max_retries):
         try:
             logger.info(f"Attempting to connect to database (attempt {attempt + 1}/{max_retries})")
-            logger.info(f"Database URL: {DATABASE_URL.replace(DB_PASSWORD, '***')}")
+            # Mask password in logs
+            safe_url = DATABASE_URL
+            if DB_PASSWORD:
+                safe_url = DATABASE_URL.replace(DB_PASSWORD, '***')
+            logger.info(f"Database URL: {safe_url}")
             
             async with async_session() as session:
                 # Test connection
