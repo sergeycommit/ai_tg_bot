@@ -85,48 +85,67 @@ async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False
 
 async def create_database_if_not_exists():
     """Initialize database with migrations"""
-    try:
-        async with async_session() as session:
-            # Create tables
-            await session.execute(text("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER UNIQUE NOT NULL,
-                    username VARCHAR,
-                    first_name VARCHAR,
-                    last_name VARCHAR,
-                    is_premium BOOLEAN DEFAULT FALSE,
-                    premium_until TIMESTAMP,
-                    requests_today INTEGER DEFAULT 0,
-                    last_request_date DATE
-                )
-            """))
+    max_retries = 5
+    retry_delay = 5  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Attempting to connect to database (attempt {attempt + 1}/{max_retries})")
+            logger.info(f"Database URL: {DATABASE_URL.replace(DB_PASSWORD, '***')}")
             
-            await session.execute(text("""
-                CREATE TABLE IF NOT EXISTS chat_messages (
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER REFERENCES users(id),
-                    role VARCHAR,
-                    content TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """))
-            
-            await session.commit()
-            logger.info("Database tables created successfully")
-            
-            # Apply migrations
-            success = await migrate_database(session)
-            if success:
-                logger.info("Database migrations applied successfully")
-            else:
-                logger.error("Failed to apply database migrations")
-                return False
+            async with async_session() as session:
+                # Test connection
+                await session.execute(text("SELECT 1"))
+                logger.info("Database connection successful")
                 
-            return True
-    except Exception as e:
-        logger.error(f"Error initializing database: {e}")
-        return False
+                # Create tables
+                await session.execute(text("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER UNIQUE NOT NULL,
+                        username VARCHAR,
+                        first_name VARCHAR,
+                        last_name VARCHAR,
+                        is_premium BOOLEAN DEFAULT FALSE,
+                        premium_until TIMESTAMP,
+                        requests_today INTEGER DEFAULT 0,
+                        last_request_date DATE
+                    )
+                """))
+                
+                await session.execute(text("""
+                    CREATE TABLE IF NOT EXISTS chat_messages (
+                        id SERIAL PRIMARY KEY,
+                        user_id INTEGER REFERENCES users(id),
+                        role VARCHAR,
+                        content TEXT,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                
+                await session.commit()
+                logger.info("Database tables created successfully")
+                
+                # Apply migrations
+                success = await migrate_database(session)
+                if success:
+                    logger.info("Database migrations applied successfully")
+                else:
+                    logger.error("Failed to apply database migrations")
+                    return False
+                    
+                return True
+                
+        except Exception as e:
+            logger.error(f"Database connection attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error("All database connection attempts failed")
+                return False
+    
+    return False
 
 async def get_chat_history(user_id: int, limit: int = 5) -> list:
     """
