@@ -25,6 +25,20 @@ from models import *
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Validate required configuration
+if not BOT_TOKEN:
+    logger.error("BOT_TOKEN is not set in environment variables")
+    exit(1)
+if not OR_API_KEY:
+    logger.error("OR_API_KEY is not set in environment variables")
+    exit(1)
+if not MODEL:
+    logger.error("MODEL is not set in environment variables")
+    exit(1)
+if not DATABASE_URL:
+    logger.error("DATABASE_URL could not be constructed - check database settings")
+    exit(1)
+
 # Initialize bot and dispatcher
 bot = Bot(token=BOT_TOKEN)
 router = Dispatcher()
@@ -118,45 +132,57 @@ async def get_chat_history(user_id: int, limit: int = 5) -> list:
     """
     Get recent chat history for a user (last 5 messages)
     """
-    async with async_session() as session:
-        # Get user
-        stmt = select(User).where(User.user_id == user_id)
-        result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            return []
-        
-        # Get recent messages ordered by timestamp
-        stmt = select(ChatMessage)\
-            .where(ChatMessage.user_id == user.id)\
-            .order_by(ChatMessage.timestamp.desc())\
-            .limit(limit)
-        result = await session.execute(stmt)
-        messages = result.scalars().all()
-        
-        # Convert to OpenAI message format and reverse order
-        return [
-            {"role": msg.role, "content": msg.content}
-            for msg in reversed(messages)
-        ]
+    try:
+        async with async_session() as session:
+            # Get user
+            stmt = select(User).where(User.user_id == user_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                return []
+            
+            # Get recent messages ordered by timestamp
+            stmt = select(ChatMessage)\
+                .where(ChatMessage.user_id == user.id)\
+                .order_by(ChatMessage.timestamp.desc())\
+                .limit(limit)
+            result = await session.execute(stmt)
+            messages = result.scalars().all()
+            
+            # Convert to OpenAI message format and reverse order
+            return [
+                {"role": msg.role, "content": msg.content}
+                for msg in reversed(messages)
+            ]
+    except Exception as e:
+        logger.error(f"Error getting chat history for user {user_id}: {e}")
+        return []
 
 async def save_message(user_id: int, role: str, content: str):
     """
     Save a message to chat history
     """
-    async with async_session() as session:
-        user = await session.get(User, user_id)
-        if not user:
-            return
-        
-        message = ChatMessage(
-            user_id=user.id,
-            role=role,
-            content=content
-        )
-        session.add(message)
-        await session.commit()
+    try:
+        async with async_session() as session:
+            # Get user by telegram user_id, not database id
+            stmt = select(User).where(User.user_id == user_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                logger.warning(f"User {user_id} not found when trying to save message")
+                return
+            
+            message = ChatMessage(
+                user_id=user.id,
+                role=role,
+                content=content
+            )
+            session.add(message)
+            await session.commit()
+    except Exception as e:
+        logger.error(f"Error saving message for user {user_id}: {e}")
 
 async def get_chatgpt_response(message: str, chat_history: list) -> str:
     """
@@ -247,7 +273,7 @@ async def cmd_start(message: Message):
                     last_name=message.from_user.last_name,
                     is_premium=False,
                     requests_today=0,
-                    last_request_date=datetime.now().date()
+                    last_request_date=datetime.utcnow().date()
                 )
                 session.add(new_user)
                 await session.commit()
@@ -298,23 +324,22 @@ async def cmd_clear(message: Message):
     """
     Clear chat history for the user
     """
-    user_id = message.from_user.id
-    async with async_session() as session:
-        stmt = select(User).where(User.user_id == user_id)
-        result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
-        
-        if user:
-            # Delete all messages for the user
-            stmt = select(ChatMessage).where(ChatMessage.user_id == user.id)
+    try:
+        user_id = message.from_user.id
+        async with async_session() as session:
+            stmt = select(User).where(User.user_id == user_id)
             result = await session.execute(stmt)
-            messages = result.scalars().all()
+            user = result.scalar_one_or_none()
             
-            for message in messages:
-                await session.delete(message)
-            await session.commit()
-    
-    await message.answer("Chat history has been cleared!")
+            if user:
+                # Delete all messages for the user using SQL
+                await session.execute(text("DELETE FROM chat_messages WHERE user_id = :user_id"), {"user_id": user.id})
+                await session.commit()
+        
+        await message.answer("Chat history has been cleared!")
+    except Exception as e:
+        logger.error(f"Error clearing chat history: {e}")
+        await message.answer("An error occurred while clearing chat history. Please try again later.")
 
 @router.message(Command("premium"))
 async def cmd_premium(message: Message):
@@ -389,7 +414,7 @@ async def process_successful_payment(message: Message):
             user = await get_user(session, message.from_user.id)
             if user:
                 user.is_premium = True
-                user.premium_until = datetime.now() + timedelta(days=plan["duration_days"])
+                user.premium_until = datetime.utcnow() + timedelta(days=plan["duration_days"])
                 await session.commit()
                 
                 await message.answer(
@@ -407,35 +432,54 @@ async def process_successful_payment(message: Message):
         await message.answer("❌ An error occurred while activating your premium subscription. Please contact support.")
 
 async def check_user_limits(user_id: int) -> bool:
-    # Check if user is admin
-    if user_id == ADMIN_USER_ID:
-        return True
-        
-    async with async_session() as session:
-        stmt = select(User).where(User.user_id == user_id)
-        result = await session.execute(stmt)
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            return False
-        
-        # Reset daily counter if it's a new day
-        current_date = datetime.utcnow().date()
-        if user.last_request_date is None or user.last_request_date.date() < current_date:
-            user.requests_today = 0
+    try:
+        # Check if user is admin
+        if user_id == ADMIN_USER_ID:
+            return True
+            
+        async with async_session() as session:
+            stmt = select(User).where(User.user_id == user_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                logger.warning(f"User {user_id} not found when checking limits")
+                return False
+            
+            # Reset daily counter if it's a new day
+            current_date = datetime.utcnow().date()
+            
+            # Handle both datetime and date types for last_request_date
+            last_date = user.last_request_date
+            if isinstance(last_date, datetime):
+                last_date = last_date.date()
+            
+            if last_date is None or last_date < current_date:
+                user.requests_today = 0
+                user.last_request_date = current_date
+                await session.commit()
+            
+            # Check if user has premium and it's still valid
+            if user.is_premium and user.premium_until and user.premium_until > datetime.utcnow():
+                return True
+            elif user.is_premium and (not user.premium_until or user.premium_until <= datetime.utcnow()):
+                # Premium expired, reset status
+                user.is_premium = False
+                user.premium_until = None
+                await session.commit()
+            
+            if user.requests_today >= FREE_REQUESTS_PER_DAY:
+                logger.info(f"User {user_id} reached daily limit: {user.requests_today}/{FREE_REQUESTS_PER_DAY}")
+                return False
+            
+            user.requests_today += 1
             user.last_request_date = current_date
             await session.commit()
-        
-        if user.is_premium:
+            logger.info(f"User {user_id} request count updated: {user.requests_today}/{FREE_REQUESTS_PER_DAY}")
             return True
-        
-        if user.requests_today >= FREE_REQUESTS_PER_DAY:
-            return False
-        
-        user.requests_today += 1
-        user.last_request_date = current_date
-        await session.commit()
-        return True
+    except Exception as e:
+        logger.error(f"Error checking user limits for user {user_id}: {e}")
+        return False
 
 async def whisper_stt(audio_file_path: str) -> str:
     logger.info("Request to whisper_stt")
@@ -486,11 +530,14 @@ async def cmd_help(message: Message):
         "<b>Available Commands:</b>\n"
         "• /start - Start the bot\n"
         "• /help - Show this help message\n"
+        "• /status - Show your current status and limits\n"
+        "• /reset_my_limit - Reset your daily limit\n"
         "• /premium - Get premium subscription\n"
         "• /clear - Clear chat history\n"
-        "• /migrate - Apply database migrations (admin only)\n\n"
+        "• /migrate - Apply database migrations (admin only)\n"
+        "• /reset_limits - Reset daily limits for all users (admin only)\n\n"
         "<b>Free Usage:</b>\n"
-        "• 5 free requests per day\n"
+        "• 300 free requests per day\n"
         "• Basic AI features\n\n"
         "<b>Premium Features:</b>\n"
         "• Unlimited requests\n"
@@ -502,6 +549,80 @@ async def cmd_help(message: Message):
     )
     
     await message.answer(help_text, parse_mode="HTML")
+
+@router.message(Command("status"))
+async def cmd_status(message: Message):
+    """Show user status and limits"""
+    try:
+        async with async_session() as session:
+            user = await get_user(session, message.from_user.id)
+            if not user:
+                await message.answer("❌ User not found in database.")
+                return
+            
+            status_text = f"📊 <b>Your Status</b>\n\n"
+            status_text += f"👤 User ID: {user.user_id}\n"
+            status_text += f"📅 Last request date: {user.last_request_date}\n"
+            status_text += f"📝 Requests today: {user.requests_today}\n"
+            status_text += f"🎯 Daily limit: {FREE_REQUESTS_PER_DAY}\n"
+            status_text += f"💎 Premium: {'Yes' if user.is_premium else 'No'}\n"
+            
+            if user.is_premium and user.premium_until:
+                status_text += f"⏰ Premium until: {user.premium_until.strftime('%d.%m.%Y %H:%M')}\n"
+            
+            current_date = datetime.utcnow().date()
+            status_text += f"🗓️ Current date: {current_date}\n"
+            
+            await message.answer(status_text, parse_mode="HTML")
+            
+    except Exception as e:
+        logger.error(f"Error in status command: {e}")
+        await message.answer("❌ An error occurred while getting status.")
+
+@router.message(Command("reset_my_limit"))
+async def cmd_reset_my_limit(message: Message):
+    """Reset daily limit for current user"""
+    try:
+        async with async_session() as session:
+            user = await get_user(session, message.from_user.id)
+            if not user:
+                await message.answer("❌ User not found in database.")
+                return
+            
+            user.requests_today = 0
+            user.last_request_date = datetime.utcnow().date()
+            await session.commit()
+            
+            await message.answer("✅ Your daily limit has been reset!")
+            logger.info(f"Daily limit reset for user {message.from_user.id}")
+            
+    except Exception as e:
+        logger.error(f"Error in reset_my_limit command: {e}")
+        await message.answer("❌ An error occurred while resetting your limit.")
+
+@router.message(Command("reset_limits"))
+async def cmd_reset_limits(message: Message):
+    """Reset daily limits for all users (admin only)"""
+    # Check if user is admin
+    if message.from_user.id != ADMIN_USER_ID:
+        await message.answer("❌ This command is only available for administrators.")
+        return
+        
+    try:
+        # Send initial message
+        status_message = await message.answer("🔄 Resetting daily limits for all users...")
+        
+        async with async_session() as session:
+            # Reset requests_today for all users
+            await session.execute(text("UPDATE users SET requests_today = 0, last_request_date = CURRENT_DATE"))
+            await session.commit()
+            
+            await status_message.edit_text("✅ Daily limits have been reset for all users!")
+            logger.info("Daily limits reset by admin")
+            
+    except Exception as e:
+        logger.error(f"Error in reset_limits command: {e}")
+        await message.answer("❌ An error occurred while resetting limits.")
 
 @router.message(Command("migrate"))
 async def cmd_migrate(message: Message):
@@ -548,6 +669,24 @@ async def cmd_migrate(message: Message):
 async def handle_message(message: Message):
     """Handle incoming messages"""
     try:
+        # Ensure user exists in database
+        async with async_session() as session:
+            user = await get_user(session, message.from_user.id)
+            if not user:
+                # Create user if doesn't exist
+                new_user = User(
+                    user_id=message.from_user.id,
+                    username=message.from_user.username,
+                    first_name=message.from_user.first_name,
+                    last_name=message.from_user.last_name,
+                    is_premium=False,
+                    requests_today=0,
+                    last_request_date=datetime.utcnow().date()
+                )
+                session.add(new_user)
+                await session.commit()
+                logger.info(f"Created new user: {new_user.user_id}")
+
         # Check subscription
         if not await check_subscription(message.from_user.id):
             await send_subscription_message(message)
@@ -626,8 +765,16 @@ async def handle_message(message: Message):
 async def main():
     """Main function"""
     try:
+        logger.info("Starting AI Telegram Bot...")
+        
         # Create database tables
-        await create_database_if_not_exists()
+        db_initialized = await create_database_if_not_exists()
+        if not db_initialized:
+            logger.error("Failed to initialize database. Exiting.")
+            return
+        
+        logger.info("Database initialized successfully")
+        logger.info("Bot is starting...")
         
         # Start polling with retry on network errors
         while True:
@@ -637,8 +784,11 @@ async def main():
                 logger.error(f"Error in polling: {e}")
                 await asyncio.sleep(5)  # Wait 5 seconds before retrying
                 continue
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
     except Exception as e:
-        logger.error(f"Error in main: {e}")
+        logger.error(f"Critical error in main: {e}")
+        raise
 
 if __name__ == "__main__":
     asyncio.run(main()) 

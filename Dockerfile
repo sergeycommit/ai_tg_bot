@@ -1,14 +1,23 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-buster
 
-WORKDIR /app
+RUN export LC_ALL=C.UTF-8 && export LANG=C.UTF-8
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+ENV TZ=UTC
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+RUN groupadd -g 1001 appgroup && useradd -m -u 1001 appuser
+ENV PATH="${PATH}:/home/appuser/.local/bin"
+
+RUN python3 -m pip install --no-cache-dir -U setuptools pip && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+USER appuser:appgroup
+
+WORKDIR .
 
 COPY . .
 
-# Add wait-for-it script to wait for database
-ADD https://raw.githubusercontent.com/vishnubob/wait-for-it/master/wait-for-it.sh /wait-for-it.sh
-RUN chmod +x /wait-for-it.sh
+RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
-CMD ["sh", "-c", "/wait-for-it.sh db:5432 -- python bot.py"]
+CMD ["python", "-u", "bot.py"]

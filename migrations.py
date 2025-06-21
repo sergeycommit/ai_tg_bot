@@ -31,7 +31,11 @@ def get_model_columns(table_name: str) -> list:
 async def notify_admin(message: str):
     """Send notification to admin"""
     try:
-        from bot import bot
+        # Import bot locally to avoid circular import
+        import importlib
+        bot_module = importlib.import_module('bot')
+        bot = bot_module.bot
+        
         # Ensure we're in an async context
         if asyncio.get_event_loop().is_running():
             await bot.send_message(ADMIN_USER_ID, message)

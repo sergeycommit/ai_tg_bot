@@ -27,7 +27,7 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 # Application settings
-FREE_REQUESTS_PER_DAY = int(os.getenv("FREE_REQUESTS_PER_DAY", "5"))  # Default to 5 free requests per day
+FREE_REQUESTS_PER_DAY = int(os.getenv("FREE_REQUESTS_PER_DAY", "30"))  # Default to 30 free requests per day
 TRIAL_PERIOD_DAYS = int(os.getenv("TRIAL_PERIOD_DAYS", "5"))  # Duration of trial period in days
 
 # New settings
