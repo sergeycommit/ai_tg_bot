@@ -12,7 +12,7 @@ services:
       - "8199:80"
     networks:
       gem_net:
-        ipv4_address: 172.55.61.11
+        ipv4_address: 172.55.63.11
 
   db:
     image: postgres:latest
@@ -29,7 +29,7 @@ services:
       - ../postgres-backup:/backup
     networks:
       gem_net:
-        ipv4_address: 172.55.61.12
+        ipv4_address: 172.55.63.12
 
   pgadmin:
     image: dpage/pgadmin4
@@ -44,11 +44,11 @@ services:
       - db
     networks:
       gem_net:
-        ipv4_address: 172.55.61.13
+        ipv4_address: 172.55.63.13
 
 networks:
   gem_net:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.55.61.0/24
+        - subnet: 172.55.63.0/24
