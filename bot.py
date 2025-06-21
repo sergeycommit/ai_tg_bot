@@ -93,7 +93,7 @@ async def create_database_if_not_exists():
             logger.info(f"Attempting to connect to database (attempt {attempt + 1}/{max_retries})")
             # Mask password in logs
             safe_url = DATABASE_URL
-            if DB_PASSWORD:
+            if DB_PASSWORD and DB_PASSWORD.strip():
                 safe_url = DATABASE_URL.replace(DB_PASSWORD, '***')
             logger.info(f"Database URL: {safe_url}")
             
