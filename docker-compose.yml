@@ -28,7 +28,7 @@ services:
       - ./postgres-data:/var/lib/postgresql/data
       - ../postgres-backup:/backup
     networks:
-      psy_net:
+      gem_net:
         ipv4_address: 172.55.61.12
 
   pgadmin:
