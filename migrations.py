@@ -51,7 +51,7 @@ async def migrate_database(session: AsyncSession):
         await session.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
-                user_id INTEGER UNIQUE NOT NULL,
+                user_id BIGINT UNIQUE NOT NULL,
                 username VARCHAR,
                 first_name VARCHAR,
                 last_name VARCHAR,
@@ -71,6 +71,26 @@ async def migrate_database(session: AsyncSession):
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        
+        # Check if user_id column needs to be migrated from INTEGER to BIGINT
+        result = await session.execute(text("""
+            SELECT data_type 
+            FROM information_schema.columns 
+            WHERE table_name = 'users' AND column_name = 'user_id'
+        """))
+        current_type = result.scalar_one_or_none()
+        
+        if current_type == 'integer':
+            logger.info("Migrating user_id column from INTEGER to BIGINT...")
+            # Change column type to BIGINT
+            await session.execute(text("""
+                ALTER TABLE users ALTER COLUMN user_id TYPE BIGINT
+            """))
+            logger.info("Successfully migrated user_id column to BIGINT")
+        elif current_type == 'bigint':
+            logger.info("user_id column is already BIGINT type")
+        else:
+            logger.warning(f"Unexpected user_id column type: {current_type}")
         
         # Process users table
         db_columns = await get_table_columns(session, 'users')

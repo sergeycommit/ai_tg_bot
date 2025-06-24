@@ -1,5 +1,6 @@
 import logging
 import os
+import traceback
 from datetime import datetime, timedelta
 import asyncio
 import requests
@@ -106,7 +107,7 @@ async def create_database_if_not_exists():
                 await session.execute(text("""
                     CREATE TABLE IF NOT EXISTS users (
                         id SERIAL PRIMARY KEY,
-                        user_id INTEGER UNIQUE NOT NULL,
+                        user_id BIGINT UNIQUE NOT NULL,
                         username VARCHAR,
                         first_name VARCHAR,
                         last_name VARCHAR,
@@ -285,15 +286,25 @@ async def get_user(session: AsyncSession, user_id: int) -> Optional[User]:
 async def cmd_start(message: Message):
     """Handle /start command"""
     try:
+        if not message.from_user:
+            logger.error("Received /start command with no user information")
+            await message.answer("An error occurred. Please try again later.")
+            return
+            
+        logger.info(f"Start command received from user {message.from_user.id}")
+        
         # Get or create user
         async with async_session() as session:
+            logger.info(f"Checking if user {message.from_user.id} exists in database")
             user = await get_user(session, message.from_user.id)
+            
             if not user:
+                logger.info(f"Creating new user {message.from_user.id}")
                 new_user = User(
                     user_id=message.from_user.id,
-                    username=message.from_user.username,
-                    first_name=message.from_user.first_name,
-                    last_name=message.from_user.last_name,
+                    username=message.from_user.username or None,
+                    first_name=message.from_user.first_name or None,
+                    last_name=message.from_user.last_name or None,
                     is_premium=False,
                     requests_today=0,
                     last_request_date=datetime.utcnow().date()
@@ -301,10 +312,14 @@ async def cmd_start(message: Message):
                 session.add(new_user)
                 await session.commit()
                 logger.info(f"Created new user: {new_user.user_id}")
+            else:
+                logger.info(f"User {message.from_user.id} already exists in database")
 
         # Send welcome message
+        logger.info(f"Sending welcome message to user {message.from_user.id}")
+        user_name = message.from_user.first_name or message.from_user.username or "User"
         await message.answer(
-            f"👋 Hello, {message.from_user.first_name}!\n\n"
+            f"👋 Hello, {user_name}!\n\n"
             "I'm an AI bot that can:\n"
             "• Answer your questions\n"
             "• Process voice messages\n"
@@ -312,8 +327,11 @@ async def cmd_start(message: Message):
             "Just send me message!\n"
             "Use /premium to get unlimited access!"
         )
+        logger.info(f"Welcome message sent successfully to user {message.from_user.id}")
+        
     except Exception as e:
-        logger.error(f"Error in start command: {e}")
+        logger.error(f"Error in start command for user {message.from_user.id}: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         await message.answer("An error occurred. Please try again later.")
 
 @router.callback_query(lambda c: c.data == "show_premium_plans")
@@ -699,9 +717,9 @@ async def handle_message(message: Message):
                 # Create user if doesn't exist
                 new_user = User(
                     user_id=message.from_user.id,
-                    username=message.from_user.username,
-                    first_name=message.from_user.first_name,
-                    last_name=message.from_user.last_name,
+                    username=message.from_user.username or None,
+                    first_name=message.from_user.first_name or None,
+                    last_name=message.from_user.last_name or None,
                     is_premium=False,
                     requests_today=0,
                     last_request_date=datetime.utcnow().date()
