@@ -41,3 +41,6 @@ PAYMENT_TOKEN = os.getenv("PAYMENT_TOKEN", "")
 
 # OpenAI settings
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Notification settings
+DEFAULT_NOTIFICATION_MESSAGE = os.getenv("DEFAULT_NOTIFICATION_MESSAGE", "Привет! 👋\n\nEnjoy!")

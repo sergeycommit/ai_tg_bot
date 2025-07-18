@@ -16,7 +16,8 @@ from openai import AsyncOpenAI
 import asyncpg
 from config import (
     BOT_TOKEN, OR_API_KEY, CHANNEL, CHANNEL_URL, DATABASE_URL, 
-    FREE_REQUESTS_PER_DAY, ADMIN_USER_ID, HF_API_KEY, MODEL, DB_PASSWORD
+    FREE_REQUESTS_PER_DAY, ADMIN_USER_ID, HF_API_KEY, MODEL, DB_PASSWORD,
+    DEFAULT_NOTIFICATION_MESSAGE
 )
 from typing import Optional
 from migrations import migrate_database
@@ -702,6 +703,137 @@ async def cmd_migrate(message: Message):
             await bot.send_message(
                 ADMIN_USER_ID,
                 f"❌ Database migration failed!\nError: {str(e)}"
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to send admin notification: {notify_error}")
+
+@router.message(Command("notificate"))
+async def cmd_notificate(message: Message):
+    """Send notification to all users (admin only)"""
+    # Check if user is admin
+    if message.from_user.id != ADMIN_USER_ID:
+        await message.answer("❌ This command is only available for administrators.")
+        return
+        
+    try:
+        # Send initial message
+        status_message = await message.answer("🔄 Sending notifications to all users...")
+        
+        # Use notification text from config
+        text = DEFAULT_NOTIFICATION_MESSAGE
+        
+        # Get all users from database
+        async with async_session() as session:
+            stmt = select(User)
+            result = await session.execute(stmt)
+            users = result.scalars().all()
+            
+            success_count = 0
+            error_count = 0
+            
+            for user in users:
+                try:
+                    await bot.send_message(user.user_id, text)
+                    success_count += 1
+                    # Small delay to avoid rate limiting
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    error_count += 1
+                    logger.error(f"Failed to send notification to user {user.user_id}: {e}")
+                    continue
+            
+            # Update status message
+            await status_message.edit_text(
+                f"✅ Notifications sent successfully!\n"
+                f"📊 Statistics:\n"
+                f"✅ Successfully sent: {success_count}\n"
+                f"❌ Failed: {error_count}\n"
+                f"📝 Total users: {len(users)}"
+            )
+            
+            logger.info(f"Notification broadcast completed. Success: {success_count}, Errors: {error_count}")
+            
+    except Exception as e:
+        logger.error(f"Error in notificate command: {e}")
+        await message.answer("❌ An error occurred while sending notifications.")
+        # Send error notification to admin
+        try:
+            await bot.send_message(
+                ADMIN_USER_ID,
+                f"❌ Notification broadcast failed!\nError: {str(e)}"
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to send admin notification: {notify_error}")
+
+@router.message(Command("notificate_custom"))
+async def cmd_notificate_custom(message: Message):
+    """Send custom notification to all users (admin only)"""
+    # Check if user is admin
+    if message.from_user.id != ADMIN_USER_ID:
+        await message.answer("❌ This command is only available for administrators.")
+        return
+    
+    # Check if message has text after command
+    command_text = message.text.strip()
+    if command_text == "/notificate_custom":
+        await message.answer(
+            "📝 Usage: /notificate_custom <your message>\n\n"
+            "Example:\n"
+            "/notificate_custom Привет всем! У нас обновление! 🎉"
+        )
+        return
+        
+    try:
+        # Extract custom text (remove command)
+        custom_text = command_text.replace("/notificate_custom", "").strip()
+        
+        if not custom_text:
+            await message.answer("❌ Please provide a message to send.")
+            return
+        
+        # Send initial message
+        status_message = await message.answer("🔄 Sending custom notifications to all users...")
+        
+        # Get all users from database
+        async with async_session() as session:
+            stmt = select(User)
+            result = await session.execute(stmt)
+            users = result.scalars().all()
+            
+            success_count = 0
+            error_count = 0
+            
+            for user in users:
+                try:
+                    await bot.send_message(user.user_id, custom_text)
+                    success_count += 1
+                    # Small delay to avoid rate limiting
+                    await asyncio.sleep(0.1)
+                except Exception as e:
+                    error_count += 1
+                    logger.error(f"Failed to send custom notification to user {user.user_id}: {e}")
+                    continue
+            
+            # Update status message
+            await status_message.edit_text(
+                f"✅ Custom notifications sent successfully!\n"
+                f"📊 Statistics:\n"
+                f"✅ Successfully sent: {success_count}\n"
+                f"❌ Failed: {error_count}\n"
+                f"📝 Total users: {len(users)}\n\n"
+                f"📤 Message sent:\n{custom_text[:100]}{'...' if len(custom_text) > 100 else ''}"
+            )
+            
+            logger.info(f"Custom notification broadcast completed. Success: {success_count}, Errors: {error_count}")
+            
+    except Exception as e:
+        logger.error(f"Error in notificate_custom command: {e}")
+        await message.answer("❌ An error occurred while sending custom notifications.")
+        # Send error notification to admin
+        try:
+            await bot.send_message(
+                ADMIN_USER_ID,
+                f"❌ Custom notification broadcast failed!\nError: {str(e)}"
             )
         except Exception as notify_error:
             logger.error(f"Failed to send admin notification: {notify_error}")
