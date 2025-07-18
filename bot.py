@@ -46,7 +46,10 @@ bot = Bot(token=BOT_TOKEN)
 router = Dispatcher()
 
 # Initialize OpenAI client
-openai_client = AsyncOpenAI(api_key=OR_API_KEY, base_url="https://openrouter.ai/api/v1")
+openai_client = AsyncOpenAI(
+    api_key=OR_API_KEY, 
+    base_url="https://openrouter.ai/api/v1"
+)
 
 # Premium subscription settings
 PREMIUM_PLANS = {
